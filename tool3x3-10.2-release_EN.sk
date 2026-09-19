@@ -1,0 +1,776 @@
+#####################################################################
+#                                                                   #
+#              TOOL3X3 - SKRIPT / DEV: YUUKI TANAS                  #
+#                                                                   #
+#####################################################################
+#
+# CONTACT: https://linktr.ee/yuukitanas0611
+#
+# REQUIREMENT
+#   - Plugin Skript
+#   - Plugin SkBee
+#
+# ------------------------------------------------------------------
+# HOW IT WORKS
+# ------------------------------------------------------------------
+#   - A "3x3 tool" is a normal tool (pickaxe / axe / shovel / hoe)
+#     carrying a special lore line. Breaking a block with it also
+#     breaks the 8 blocks around it, on the plane the player is
+#     facing (up/down, sideways, or straight ahead).
+#
+#   - Pickaxe & Shovel : break in 3x3 for almost any block, except a
+#     built-in blacklist of "junk" blocks (signs, carpets, crops,
+#     saplings, leaves, flowers, etc.) kept out to avoid annoying
+#     side effects.
+#
+#   - Axe : only breaks in 3x3 when the target block is wood-related
+#     (logs, planks, stairs, slabs, fences, doors, trapdoors, signs,
+#     leaves...). Any other block just breaks normally (1 block).
+#
+#   - Hoe : only harvests in 3x3 when the target block is a crop
+#     (wheat, carrots, potatoes, beetroot, melon/pumpkin stems,
+#     cocoa, sweet berries, bamboo, etc.). Right-clicking a hoe on
+#     dirt/grass also tills the 8 surrounding blocks into farmland.
+#     Any other block just breaks normally (1 block).
+#
+#   - Each player can toggle their own 3x3 mode on/off by
+#     right-clicking in the air while holding a 3x3 tool.
+#
+#   - Breaking blocks in 3x3 costs extra hunger every
+#     {@veinHungerEvery} blocks broken, and is blocked once the
+#     player's food level is too low.
+#
+#   - A 3x3 tool can optionally have a time limit; once it expires
+#     it is automatically removed from the player's inventory.
+#
+# ------------------------------------------------------------------
+# COMMANDS / USAGE
+# ------------------------------------------------------------------
+#   /tool3x3 <player> <material> <type> [duration]
+#       Give a 3x3 tool to an online player.
+#         player   : player name
+#         material : netherite | diamond | gold | iron | copper |
+#                    stone | wood
+#         type     : pickaxe | axe | shovel | hoe
+#                    (append "_infinity" for an unbreakable tool,
+#                     e.g. "pickaxe_infinity")
+#         duration : optional, e.g. 1m (minutes) / 1h (hours) /
+#                    1d (days) - omit it for a permanent tool
+#
+#   /tool3x3 reload-lore
+#       Refresh the lore of every 3x3 tool currently held by an
+#       online player so it matches the current "loreTool" text
+#       below. Run this after editing that option so tools given
+#       out earlier stay recognized as 3x3 tools.
+#
+#   /tool3x3 help
+#       Show in-game usage help.
+#
+#   Permission required for every subcommand above: "3x3.admin"
+#   (see the "permNode" option below)
+#
+# ------------------------------------------------------------------
+# CUSTOMIZABLE OPTIONS
+# ------------------------------------------------------------------
+#   All wording, colors and numbers below can be freely edited.
+#   See the commented "options:" block right underneath for what
+#   each entry controls.
+#
+#####################################################################
+
+options:
+    # Chat prefix shown before every message from this script.
+    prefix: &8[&aTool3x3&8]&r
+
+    # Lore line used to mark and recognize a 3x3 tool. If you change
+    # this, run "/tool3x3 reload-lore" so existing tools get updated.
+    loreTool: &73x3 Tool - Can be renamed and enchanted.
+
+    # Internal tag prefix used to store a timed tool's expiration id
+    # inside its lore. Advanced/internal use, no need to change it.
+    idTag: ID3X3
+
+    # Permission node required to use any /tool3x3 subcommand.
+    permNode: 3x3.admin
+
+    # Message shown when a player without permission runs /tool3x3.
+    msgOnlyOp: &4You don't have permission to use this command!
+
+    # Message shown on invalid command usage / arguments.
+    msgInvalid: &4Invalid command!
+
+    # Message shown to a player whose timed tool has just expired.
+    msgExpired: &4This tool has expired!
+
+    # Action bar message shown when a player's food level is too low
+    # to keep breaking blocks in 3x3.
+    msgHungry: &4You are too hungry&f
+
+    # Reserved for a future sound effect; currently unused.
+    amethystSound: block.amethyst_cluster.break
+    amethystVolume: 1
+    amethystPitch: 1
+
+    # How many extra blocks broken in 3x3 before 1 hunger point
+    # (half a drumstick) is consumed.
+    veinHungerEvery: 20
+
+    # Action bar text shown when a player toggles 3x3 mode on/off.
+    toggleOn: &a&l3x3 Mining: &fON
+    toggleOff: &c&l3x3 Mining: &fOFF
+
+#####################################################################
+#                                                                   #
+#                               CODE                                #
+#                  (edit below this line with care)                #
+#                                                                   #
+#####################################################################
+
+function is3x3Tool(tool: item) :: boolean:
+    if {_tool} is not set:
+        return false
+    if lore of {_tool} contains "{@loreTool}":
+        return true
+    return false
+
+function is3x3ToolByLore(tool: item) :: boolean:
+    if {_tool} is not set:
+        return false
+    set {_lore::*} to lore of {_tool}
+    loop {_lore::*}:
+        if loop-value contains "3x3":
+            return true
+    return false
+function getExpireId(tool: item) :: number:
+    if {_tool} is not set:
+        return 0
+    set {_last} to last element of (lore of {_tool})
+    if {_last} is not set:
+        return 0
+    set {_prefix} to "&8{@idTag}:"
+    if {_last} contains {_prefix}:
+        set {_start} to (length of {_prefix}) + 1
+        set {_len} to length of {_last}
+        set {_num} to (substring of {_last} from {_start} to {_len}) parsed as number
+        if {_num} is set:
+            return {_num}
+    return 0
+
+function parseDurationSeconds(input: text) :: number:
+    if {_input} is not set:
+        return -1
+
+    set {_raw} to {_input} in lower case
+    set {_len} to length of {_raw}
+    if {_len} < 2:
+        return -1
+
+    set {_unit} to substring of {_raw} from {_len} to {_len}
+    set {_numPart} to substring of {_raw} from 1 to ({_len} - 1)
+    set {_num} to {_numPart} parsed as number
+    if {_num} is not set:
+        return -1
+    if {_num} <= 0:
+        return -1
+
+    if {_unit} is "m":
+        return {_num} * 60
+    else if {_unit} is "h":
+        return {_num} * 3600
+    else if {_unit} is "d":
+        return {_num} * 86400
+    else:
+        return -1
+function isJunkBlock(b: block) :: boolean:
+    if {_b} is not set:
+        return false
+    if {_b} is tagged as tag "minecraft:wool_carpets":
+        return true
+    if {_b} is tagged as tag "minecraft:buttons":
+        return true
+    if {_b} is tagged as tag "minecraft:pressure_plates":
+        return true
+    if {_b} is tagged as tag "minecraft:logs":
+        return true
+    if {_b} is tagged as tag "minecraft:planks":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_stairs":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_slabs":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_fences":
+        return true
+    if {_b} is tagged as tag "minecraft:fence_gates":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_doors":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_trapdoors":
+        return true
+    if {_b} is tagged as tag "minecraft:signs":
+        return true
+    if {_b} is tagged as tag "minecraft:wall_signs":
+        return true
+    if {_b} is tagged as tag "minecraft:ceiling_hanging_signs":
+        return true
+    if {_b} is tagged as tag "minecraft:wall_hanging_signs":
+        return true
+    if {_b} is a shulker box:
+        return true
+    if {_b} is dead bush:
+        return true
+    if {_b} is any of bedrock, chest, trapped chest, ender chest, barrel, ancient debris, spawner, beacon, reinforced deepslate, vault, trial spawner, end portal frame, obsidian and dragon egg:
+        return true
+    if {_b} is any of short grass, tall grass, fern, large fern, seagrass, tall seagrass, kelp and kelp plant:
+        return true
+    if {_b} is any of oak leaves, spruce leaves, birch leaves, jungle leaves, acacia leaves, dark oak leaves, pale oak leaves, mangrove leaves, cherry leaves, azalea leaves and flowering azalea leaves:
+        return true
+    if {_b} is any of oak sapling, spruce sapling, birch sapling, jungle sapling, acacia sapling, dark oak sapling, pale oak sapling, mangrove propagule, cherry sapling, azalea and flowering azalea:
+        return true
+    if {_b} is any of wheat, carrots, potatoes, beetroots, nether wart, melon stem, attached melon stem, pumpkin stem, attached pumpkin stem, cocoa, sweet berry bush, bamboo, bamboo sapling, torchflower crop and pitcher crop:
+        return true
+    if {_b} is any of dandelion, poppy, blue orchid, allium, azure bluet, red tulip, orange tulip, white tulip, pink tulip, oxeye daisy, cornflower, lily of the valley, wither rose, sunflower, lilac, rose bush, peony and torchflower:
+        return true
+    if {_b} is any of leaf litter, pink petals, vine, weeping vines, weeping vines plant, twisting vines, twisting vines plant, cave vines, cave vines plant, glow lichen, hanging roots, moss carpet, sugar cane, cactus, brown mushroom, red mushroom, lily pad, sea pickle and spore blossom:
+        return true
+    if {_b} is any of tube coral, brain coral, bubble coral, fire coral, horn coral, tube coral fan, brain coral fan, bubble coral fan, fire coral fan, horn coral fan, dead tube coral, dead brain coral, dead bubble coral, dead fire coral, dead horn coral, dead tube coral fan, dead brain coral fan, dead bubble coral fan, dead fire coral fan and dead horn coral fan:
+        return true
+    if {_b} is any of open eyeblossom, closed eyeblossom, pale moss block, pale moss carpet and pale hanging moss:
+        return true
+    if {_b} is any of moss block, big dripleaf, big dripleaf stem and small dripleaf:
+        return true
+    if {_b} is any of small amethyst bud, medium amethyst bud, large amethyst bud and amethyst cluster:
+        return true
+    if {_b} is any of cactus flower, short dry grass, tall dry grass, bush and wildflowers:
+        return true
+    if {_b} is any of crimson fungus, warped fungus, crimson roots, warped roots and nether sprouts:
+        return true
+    if {_b} is any of cobweb, snow, lodestone, tnt, slime block and firefly bush:
+        return true
+    if {_b} is any of furnace, blast furnace and smoker:
+        return true
+    if {_b} is any of crafting table, anvil, chipped anvil, damaged anvil, enchanting table, brewing stand, cauldron, grindstone, stonecutter, loom, cartography table, smithing table, fletching table and composter:
+        return true
+    if {_b} is any of lectern, jukebox, note block, dispenser, dropper, hopper and crafter:
+        return true
+
+    return false
+
+function isBlockBlacklisted(b: block) :: boolean:
+    if isJunkBlock({_b}) is true:
+        return true
+    return false
+
+function getToolCategory(tool: item) :: text:
+    if {_tool} is not set:
+        return "other"
+    set {_typeText} to ("%type of {_tool}%" in lower case)
+    if {_typeText} contains "pickaxe":
+        return "pickaxe"
+    if {_typeText} contains "shovel":
+        return "shovel"
+    if {_typeText} contains "hoe":
+        return "hoe"
+    if {_typeText} contains "axe":
+        return "axe"
+    return "other"
+
+function isCropBlock(b: block) :: boolean:
+    if {_b} is not set:
+        return false
+    if {_b} is any of wheat, carrots, potatoes, beetroots, nether wart, melon stem, attached melon stem, pumpkin stem, attached pumpkin stem, cocoa, sweet berry bush, bamboo, bamboo sapling, torchflower crop and pitcher crop:
+        return true
+    return false
+
+function isWoodBlock(b: block) :: boolean:
+    if {_b} is not set:
+        return false
+    if {_b} is tagged as tag "minecraft:logs":
+        return true
+    if {_b} is tagged as tag "minecraft:planks":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_stairs":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_slabs":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_fences":
+        return true
+    if {_b} is tagged as tag "minecraft:fence_gates":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_doors":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_trapdoors":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_buttons":
+        return true
+    if {_b} is tagged as tag "minecraft:wooden_pressure_plates":
+        return true
+    if {_b} is tagged as tag "minecraft:signs":
+        return true
+    if {_b} is tagged as tag "minecraft:wall_signs":
+        return true
+    if {_b} is tagged as tag "minecraft:ceiling_hanging_signs":
+        return true
+    if {_b} is tagged as tag "minecraft:wall_hanging_signs":
+        return true
+    if {_b} is tagged as tag "minecraft:leaves":
+        return true
+    return false
+
+function isTillableBlock(b: block) :: boolean:
+    if {_b} is not set:
+        return false
+    if {_b} is any of grass block, dirt, dirt path and rooted dirt:
+        return true
+    return false
+
+function calcRemainingHours(expireUnix: number) :: number:
+    if {_expireUnix} is not set:
+        return 0
+    set {_nowUnix} to unix timestamp of now
+    set {_diff} to {_expireUnix} - {_nowUnix}
+    if {_diff} < 0:
+        set {_diff} to 0
+    return round({_diff} / 3600)
+
+function calcRemainingSeconds(expireUnix: number) :: number:
+    if {_expireUnix} is not set:
+        return 0
+    set {_nowUnix} to unix timestamp of now
+    set {_diff} to {_expireUnix} - {_nowUnix}
+    if {_diff} < 0:
+        set {_diff} to 0
+    return {_diff}
+
+function formatRemaining(seconds: number) :: text:
+    if {_seconds} is not set:
+        return "0 seconds"
+    if {_seconds} < 0:
+        set {_seconds} to 0
+
+    set {_days} to floor({_seconds} / 86400)
+    set {_rem} to {_seconds} - ({_days} * 86400)
+    set {_hours} to floor({_rem} / 3600)
+    set {_rem} to {_rem} - ({_hours} * 3600)
+    set {_minutes} to floor({_rem} / 60)
+    set {_secs} to floor({_rem} - ({_minutes} * 60))
+
+    if {_days} > 0:
+        add "%{_days}% day(s)" to {_parts::*}
+    if {_hours} > 0:
+        add "%{_hours}% hour(s)" to {_parts::*}
+    if {_minutes} > 0:
+        add "%{_minutes}% minute(s)" to {_parts::*}
+    if {_days} is 0:
+        if {_hours} is 0:
+            add "%{_secs}% second(s)" to {_parts::*}
+
+    if size of {_parts::*} is 0:
+        return "0 seconds"
+    return join {_parts::*} with " "
+function lightenHex(hex: text, percent: number) :: text:
+    set {_r} to fromBase((substring of {_hex} from 1 to 2), 16)
+    set {_g} to fromBase((substring of {_hex} from 3 to 4), 16)
+    set {_b} to fromBase((substring of {_hex} from 5 to 6), 16)
+    set {_r} to round({_r} + (255 - {_r}) * {_percent} / 100)
+    set {_g} to round({_g} + (255 - {_g}) * {_percent} / 100)
+    set {_b} to round({_b} + (255 - {_b}) * {_percent} / 100)
+
+    set {_rHex} to toBase({_r}, 16)
+    set {_gHex} to toBase({_g}, 16)
+    set {_bHex} to toBase({_b}, 16)
+
+    if length of {_rHex} is 1:
+        set {_rHex} to "0%{_rHex}%"
+    if length of {_gHex} is 1:
+        set {_gHex} to "0%{_gHex}%"
+    if length of {_bHex} is 1:
+        set {_bHex} to "0%{_bHex}%"
+    return "%{_rHex}%%{_gHex}%%{_bHex}%"
+on script load:
+    if {3x3_id_counter} is not set:
+        set {3x3_id_counter} to 0
+
+command /tool3x3 [<text>] [<text>] [<text>] [<text>]:
+    description: Give a 3x3 tool to an online player, refresh tool lore, or show help
+    usage: /tool3x3 <player|reload-lore|help> [material] [type] [duration]
+    permission: {@permNode}
+    permission message: {@prefix} {@msgOnlyOp}
+    trigger:
+        if arg-1 is not set:
+            send "{@prefix} {@msgInvalid}"
+            stop
+
+        if arg-1 is "help":
+            send "{@prefix} &6&l--- Tool3x3 Help ---"
+            send "{@prefix} &f/tool3x3 <player> <netherite|diamond|gold|iron|copper|stone|wood> <pickaxe|axe|shovel|hoe>[_infinity] [1m|1h|1d]"
+            send "{@prefix} &7Give a 3x3 tool to an online player."
+            send "{@prefix} &7  material: netherite, diamond, gold, iron, copper, stone, wood"
+            send "{@prefix} &7  type: pickaxe, axe, shovel, hoe (append _infinity for an unbreakable tool)"
+            send "{@prefix} &7  duration (optional): 1m (minutes), 1h (hours), 1d (days) - leave empty for a permanent tool"
+            send "{@prefix} &f/tool3x3 reload-lore"
+            send "{@prefix} &7Refresh the lore of every 3x3 tool currently held by an online player so it matches the current lore text."
+            send "{@prefix} &f/tool3x3 help"
+            send "{@prefix} &7Show this help message."
+            stop
+
+        if arg-1 is "reload-lore":
+            set {_count} to 0
+            loop all players:
+                loop all items in the inventory of loop-player:
+                    if is3x3ToolByLore(loop-item) is true:
+                        set {_lore::*} to lore of loop-item
+                        if size of {_lore::*} >= 1:
+                            set {_lore::1} to "{@loreTool}"
+                        else:
+                            add "{@loreTool}" to {_lore::*}
+                        set lore of loop-item to {_lore::*}
+                        add 1 to {_count}
+            send "{@prefix} &aRefreshed the lore of &f%{_count}%&a tool(s)."
+            stop
+
+        if arg-2 is not set:
+            send "{@prefix} {@msgInvalid}"
+            stop
+        if arg-3 is not set:
+            send "{@prefix} {@msgInvalid}"
+            stop
+        loop all players:
+            if (name of loop-player) in lower case is (arg-1 in lower case):
+                set {_target} to loop-player
+        if {_target} is not set:
+            send "{@prefix} {@msgInvalid}"
+            stop
+
+        set {_matRaw} to arg-2 in lower case
+        set {_matName} to ""
+        set {_matEn} to ""
+        set {_matColor} to "FFFFFF"
+        if {_matRaw} is "wood":
+            set {_matName} to "wooden"
+            set {_matEn} to "Wooden"
+            set {_matColor} to "8B5A2B"
+        else if {_matRaw} is "stone":
+            set {_matName} to "stone"
+            set {_matEn} to "Stone"
+            set {_matColor} to "8F8F8F"
+        else if {_matRaw} is "copper":
+            set {_matName} to "copper"
+            set {_matEn} to "Copper"
+            set {_matColor} to "B87333"
+        else if {_matRaw} is "iron":
+            set {_matName} to "iron"
+            set {_matEn} to "Iron"
+            set {_matColor} to "D8D8D8"
+        else if {_matRaw} is "gold":
+            set {_matName} to "golden"
+            set {_matEn} to "Golden"
+            set {_matColor} to "FFD700"
+        else if {_matRaw} is "diamond":
+            set {_matName} to "diamond"
+            set {_matEn} to "Diamond"
+            set {_matColor} to "4AEDD9"
+        else if {_matRaw} is "netherite":
+            set {_matName} to "netherite"
+            set {_matEn} to "Netherite"
+            set {_matColor} to "4A4A4A"
+        else:
+            send "{@prefix} {@msgInvalid}"
+            stop
+        set {_typeRaw} to arg-3 in lower case
+        set {_unbreakable} to false
+        set {_tlen} to length of {_typeRaw}
+        if {_tlen} > 9:
+            set {_suffix} to substring of {_typeRaw} from ({_tlen} - 8) to {_tlen}
+            if {_suffix} is "_infinity":
+                set {_unbreakable} to true
+                set {_typeRaw} to substring of {_typeRaw} from 1 to ({_tlen} - 9)
+
+        set {_typeName} to ""
+        set {_typeEn} to ""
+        if {_typeRaw} is "pickaxe":
+            set {_typeName} to "pickaxe"
+            set {_typeEn} to "Pickaxe"
+        else if {_typeRaw} is "axe":
+            set {_typeName} to "axe"
+            set {_typeEn} to "Axe"
+        else if {_typeRaw} is "shovel":
+            set {_typeName} to "shovel"
+            set {_typeEn} to "Shovel"
+        else if {_typeRaw} is "hoe":
+            set {_typeName} to "hoe"
+            set {_typeEn} to "Hoe"
+        else:
+            send "{@prefix} {@msgInvalid}"
+            stop
+        set {_item} to ("%{_matName}% %{_typeName}%") parsed as item type
+        if {_item} is not set:
+            send "{@prefix} {@msgInvalid}"
+            stop
+        set {_displayNamePlain} to "%{_matEn}% %{_typeEn}% 3x3"
+        set {_displayName} to "<#%{_matColor}%>&l%{_displayNamePlain}%"
+        set name of {_item} to {_displayName}
+        add "{@loreTool}" to lore of {_item}
+        if arg-4 is set:
+            set {_seconds} to parseDurationSeconds(arg-4)
+            if {_seconds} < 0:
+                send "{@prefix} {@msgInvalid}"
+                stop
+            add 1 to {3x3_id_counter}
+            set {_id} to {3x3_id_counter}
+            set {_duration} to {_seconds} * 1 second
+            set {_expire} to now + {_duration}
+            set {_expireUnix} to unix timestamp of {_expire}
+            set {expire3x3::%{_id}%} to {_expireUnix}
+
+            set {_remainText} to formatRemaining(calcRemainingSeconds({_expireUnix}))
+            add "&7Expires in: &f%{_remainText}%" to lore of {_item}
+            add "&8{@idTag}:%{_id}%" to lore of {_item}
+            if {_unbreakable} is true:
+                set {_item} to unbreakable {_item}
+
+            give {_item} to {_target}
+            send "{@prefix} &aGave %{_displayName}%&a to &f%{_target}%&a! &7(Expires in: &f%{_remainText}%&7)"
+            if player is not set:
+                send "{@prefix} &aYou received %{_displayName}%&a! &7(Expires in: &f%{_remainText}%&7)" to {_target}
+            else if player is not {_target}:
+                send "{@prefix} &aYou received %{_displayName}%&a! &7(Expires in: &f%{_remainText}%&7)" to {_target}
+        else:
+            if {_unbreakable} is true:
+                set {_item} to unbreakable {_item}
+
+            give {_item} to {_target}
+            send "{@prefix} &aGave %{_displayName}%&a to &f%{_target}%&a!"
+            if player is not set:
+                send "{@prefix} &aYou received %{_displayName}%&a! &7(Permanent)" to {_target}
+            else if player is not {_target}:
+                send "{@prefix} &aYou received %{_displayName}%&a!" to {_target}
+on tab complete of "/tool3x3":
+    loop all players:
+        add name of loop-player to {_onlineNames::*}
+    add "reload-lore" to {_onlineNames::*}
+    add "help" to {_onlineNames::*}
+    set tab completions for position 1 to {_onlineNames::*}
+    set tab completions for position 2 to "netherite", "diamond", "gold", "iron", "copper", "stone" and "wood"
+    set tab completions for position 3 to "pickaxe_infinity", "axe_infinity", "shovel_infinity", "hoe_infinity", "pickaxe", "axe", "shovel" and "hoe"
+on right click on air:
+    set {_tool} to tool of player
+    if is3x3Tool({_tool}) is true:
+        if {3x3Enabled::%uuid of player%} is not set:
+            set {3x3Enabled::%uuid of player%} to true
+        if {3x3Enabled::%uuid of player%} is true:
+            set {3x3Enabled::%uuid of player%} to false
+            send action bar "{@toggleOff}" to player
+        else:
+            set {3x3Enabled::%uuid of player%} to true
+            send action bar "{@toggleOn}" to player
+        cancel event
+
+on right click:
+    if event-block is not set:
+        stop
+    if isTillableBlock(event-block) is false:
+        stop
+
+    set {_tool} to tool of player
+    if is3x3Tool({_tool}) is false:
+        stop
+
+    if getToolCategory({_tool}) is not "hoe":
+        stop
+
+    if {3x3Enabled::%uuid of player%} is not set:
+        set {3x3Enabled::%uuid of player%} to true
+
+    if {3x3Enabled::%uuid of player%} is false:
+        stop
+
+    if event is cancelled:
+        stop
+
+    set {_id} to getExpireId({_tool})
+    if {_id} > 0:
+        set {_exp} to {expire3x3::%{_id}%}
+        if {_exp} is set:
+            set {_nowUnix} to unix timestamp of now
+            if {_nowUnix} > {_exp}:
+                remove {_tool} from player's inventory
+                delete {expire3x3::%{_id}%}
+                send "{@prefix} {@msgExpired}" to player
+                stop
+
+    set {_loc} to location of event-block
+
+    loop numbers from -1 to 1:
+        set {_i} to loop-number
+        loop numbers from -1 to 1:
+            set {_j} to loop-number-2
+
+            if {_i} is 0:
+                if {_j} is 0:
+                    continue
+
+            if {_tool} is not set:
+                stop
+
+            set {_target} to location of {_loc}
+            add {_i} to x-coordinate of {_target}
+            add {_j} to z-coordinate of {_target}
+
+            if isTillableBlock(block at {_target}) is true:
+                set block at {_target} to farmland
+                draw 2 purple dust particles at {_target}
+
+on break:
+    set {_tool} to tool of player
+
+    if is3x3Tool({_tool}) is true:
+
+        if {3x3Enabled::%uuid of player%} is not set:
+            set {3x3Enabled::%uuid of player%} to true
+
+        if {3x3Enabled::%uuid of player%} is false:
+            stop
+
+        set {_category} to getToolCategory({_tool})
+
+        set {_allow3x3} to false
+        if {_category} is "hoe":
+            if isCropBlock(event-block) is true:
+                set {_allow3x3} to true
+        else if {_category} is "axe":
+            if isWoodBlock(event-block) is true:
+                set {_allow3x3} to true
+        else:
+            if isJunkBlock(event-block) is false:
+                set {_allow3x3} to true
+
+        if {_allow3x3} is false:
+            stop
+
+        if event is cancelled:
+            stop
+
+        set {_foodPoints} to (player's food level) * 2
+        if {_foodPoints} < 7:
+            send action bar "{@msgHungry}" to player
+            stop
+
+        set {_id} to getExpireId({_tool})
+        if {_id} > 0:
+            set {_exp} to {expire3x3::%{_id}%}
+            if {_exp} is set:
+                set {_nowUnix} to unix timestamp of now
+                if {_nowUnix} > {_exp}:
+                    remove {_tool} from player's inventory
+                    delete {expire3x3::%{_id}%}
+                    send "{@prefix} {@msgExpired}" to player
+                    stop
+
+        add 1 to {veinHunger::%player%}
+        if {veinHunger::%player%} >= {@veinHungerEvery}:
+            set {veinHunger::%player%} to {veinHunger::%player%} - {@veinHungerEvery}
+            set {_sat} to player's saturation
+            if {_sat} > 0:
+                if {_sat} >= 2:
+                    remove 2 from player's saturation
+                else:
+                    set player's saturation to 0
+            else:
+                if player's food level > 0:
+                    remove 1 from player's food level
+
+        set {_loc} to location of event-block
+
+        set {_mode} to "xy"
+
+        if {_category} is "hoe":
+            set {_mode} to "xz"
+        else:
+            set {_pitch} to player's pitch
+            set {_yaw} to player's yaw
+
+            set {_yawN} to mod({_yaw} + 360, 360)
+
+            if {_pitch} > 45:
+
+                set {_mode} to "xz"
+            else:
+                if {_pitch} < -45:
+                    set {_mode} to "xz"
+                else:
+                    if {_yawN} < 45:
+                        set {_mode} to "xy"
+                    else:
+                        if {_yawN} < 135:
+                            set {_mode} to "zy"
+                        else:
+                            if {_yawN} < 225:
+
+                                set {_mode} to "xy"
+                            else:
+                                if {_yawN} < 315:
+                                    set {_mode} to "zy"
+                                else:
+                                    set {_mode} to "xy"
+
+        loop numbers from -1 to 1:
+            set {_i} to loop-number
+            loop numbers from -1 to 1:
+                set {_j} to loop-number-2
+
+                if {_i} is 0:
+                    if {_j} is 0:
+                        continue
+
+                if {_tool} is not set:
+                    stop
+
+                set {_target} to location of {_loc}
+
+                if {_mode} is "xz":
+                    add {_i} to x-coordinate of {_target}
+                    add {_j} to z-coordinate of {_target}
+                else if {_mode} is "xy":
+                    add {_i} to x-coordinate of {_target}
+                    add {_j} to y-coordinate of {_target}
+                else:
+                    add {_i} to z-coordinate of {_target}
+                    add {_j} to y-coordinate of {_target}
+
+                if block at {_target} is not air:
+                    set {_blockAtTarget} to block at {_target}
+                    set {_canBreak} to false
+                    if {_category} is "hoe":
+                        if isCropBlock({_blockAtTarget}) is true:
+                            set {_canBreak} to true
+                    else if {_category} is "axe":
+                        if isWoodBlock({_blockAtTarget}) is true:
+                            set {_canBreak} to true
+                    else:
+                        if isBlockBlacklisted({_blockAtTarget}) is false:
+                            set {_canBreak} to true
+
+                    if {_canBreak} is true:
+                        draw 2 purple dust particles at {_target}
+                        break block at {_target} naturally using {_tool}
+
+every 5 seconds:
+    loop all players:
+        loop all items in the inventory of loop-player:
+            if is3x3Tool(loop-item) is true:
+                set {_id} to getExpireId(loop-item)
+                if {_id} > 0:
+                    set {_exp} to {expire3x3::%{_id}%}
+                    if {_exp} is set:
+                        set {_remSeconds} to calcRemainingSeconds({_exp})
+                        if {_remSeconds} <= 0:
+                            remove loop-item from loop-player's inventory
+                            delete {expire3x3::%{_id}%}
+                            send "{@prefix} {@msgExpired}" to loop-player
+                        else:
+                            set {_remainText} to formatRemaining({_remSeconds})
+                            set {_lore::*} to lore of loop-item
+                            set {_lastIdx} to size of {_lore::*}
+                            set {_expIdx} to {_lastIdx} - 1
+                            set {_lore::%{_expIdx}%} to "&7Expires in: &f%{_remainText}%"
+                            set lore of loop-item to {_lore::*}
